@@ -14,6 +14,7 @@
 #include "spkgain.h"
 #include "update.h"
 #include "wifimotion.h"
+#include "wakeclip.h"
 #include "statefile.h"
 #include "ring.h"
 #include <ctype.h>
@@ -58,7 +59,7 @@ static void path(char *out, size_t cap, const char *file) { snprintf(out, cap, "
 
 /* ---------------------------------------------------------------- the table */
 
-enum id { WAKE_ENGINE, MIC_LEVEL, DENOISE, WAKE_SOUND, WAKE_SOUND_REMOVAL, MUTE, DND, TIMER_RING, TIMER_SOUND, TIMER_STOP_ANY, STOP_ENDS, WAKE_IN_REQ, END_REQ, BT_ANNOUNCE, BT_LANG, LED_AUTO, LED_LEVEL, RING_ROT, BAND, ARB, ARB_MODE, ARB_AUTO, ARB_WINDOW, ARB_OFFSET, SOUND, WHISPER, WAKE_EVENTS, REQUEST_TEXT, WIFI_MOTION,
+enum id { WAKE_ENGINE, MIC_LEVEL, DENOISE, WAKE_SOUND, WAKE_SOUND_REMOVAL, WAKE_CLIPS, MUTE, DND, TIMER_RING, TIMER_SOUND, TIMER_STOP_ANY, STOP_ENDS, WAKE_IN_REQ, END_REQ, BT_ANNOUNCE, BT_LANG, LED_AUTO, LED_LEVEL, RING_ROT, BAND, ARB, ARB_MODE, ARB_AUTO, ARB_WINDOW, ARB_OFFSET, SOUND, WHISPER, WAKE_EVENTS, REQUEST_TEXT, WIFI_MOTION,
           WIFI_SENS, LIGHT_SENSOR, BT_AUDIO, BT_SPEAKER, BT_OUT_DELAY, BT_OUT_AWAKE, BT_OUT_STAY, DROPIN, DROPIN_ANSWER, UPDATES, HTTPS_VERIFY, SS_UNPAIRED, EQ_BASS, EQ_MID, EQ_TREBLE, SPK_GAIN, VOLUME, VOL_SPLIT,
           ASSIST_LINK, ASSIST_LEVEL, ASSIST_OFFSET, SOUNDS_LINK, SOUNDS_LEVEL, SOUNDS_OFFSET, TIMER_LINK, TIMER_LEVEL, TIMER_OFFSET,
           CALL_LINK, CALL_LEVEL, CALL_OFFSET, NSET };
@@ -75,6 +76,8 @@ static const struct setting table[NSET] = {
     /* earsup.c; experimental: a card of the page's Features, but no feature: it has no entities, and switching a
      * feature makes Home Assistant reconnect */
     [WAKE_SOUND_REMOVAL] = { "wake_sound_removal", "Wake sound removal (experimental)", "Features", NULL, S_BOOL, 0, 1, 1, 0 },
+    /* wakeclip.c (fork gregpakes/echo-dot-assist): a card like the one above, no entities; for this one Echo */
+    [WAKE_CLIPS]  = { "wake_clips", "Wake word clips (experimental)", "Features", NULL, S_BOOL, 0, 1, 0, 0 },
     [MUTE]        = { "mute", "Mute", "Voice", NULL, S_BOOL, 0, 1, 0, 0 },            /* what the Echo is doing right now */
     [DND]         = { "do_not_disturb", "Do not disturb", "Voice", NULL, S_BOOL, 0, 1, 0, 0 },
     [TIMER_RING]  = { "timer_ring", "Timers ring for", "Voice", "s", S_INT, 0, 600, 1, 0 },     /* 0: until stopped */
@@ -216,6 +219,7 @@ int settings_get(const struct setting *s)
     case DENOISE: return core_mic_denoise(-1);
     case WAKE_SOUND: return core_wake_sound(-1);
     case WAKE_SOUND_REMOVAL: return core_wake_sound_removal(-1);
+    case WAKE_CLIPS: return wakeclip_enable(-1);
     case MUTE: return core_soft_mute(-1);
     case DND: return core_dnd(-1);
     case TIMER_RING: return core_timer_ring(-1);
@@ -272,6 +276,7 @@ static void put(enum id i, int v)
     case DENOISE: core_mic_denoise(v); break;
     case WAKE_SOUND: core_wake_sound(v); break;
     case WAKE_SOUND_REMOVAL: core_wake_sound_removal(v); break;
+    case WAKE_CLIPS: wakeclip_enable(v); break;
     case MUTE: core_soft_mute(v); break;
     case DND: core_dnd(v); break;
     case TIMER_RING: core_timer_ring(v); break;
