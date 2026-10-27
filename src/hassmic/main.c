@@ -50,6 +50,7 @@
 #include "dropin.h"
 #include "micdenoise.h"
 #include "earsup.h"
+#include "wakeclip.h"
 #include "micgain.h"
 #include "netaddr.h"
 #include "netio.h"
@@ -1248,6 +1249,25 @@ static uint64_t word_tail_end(uint64_t end, uint64_t to)
     return low_at;
 }
 
+static uint64_t clip_word_begin, clip_word_end;    /* under lock: the last wake word Pryon heard, for wakeclip.c */
+
+/* A wake word clip (wakeclip.h) of the request that streams from `from` (after the word's tail), the wake word having
+ * ended at word_end: the ring from 300 ms before the word up to `to`.  Capture thread, lock held. */
+static void clip_start(uint64_t word_end, uint64_t from, uint64_t to)
+{
+    uint64_t begin = clip_word_end == word_end ? clip_word_begin : (word_end > CAP_RATE * 6 / 10 ? word_end - CAP_RATE * 6 / 10 : 0);
+    uint64_t pre = begin > CAP_RATE * 3 / 10 ? begin - CAP_RATE * 3 / 10 : 0;
+    if (ring_n > RING_SAMPLES && pre < ring_n - RING_SAMPLES) pre = ring_n - RING_SAMPLES;
+    if (to > ring_n) to = ring_n;
+    if (pre > begin || to <= pre) return;
+    size_t n = (size_t)(to - pre);
+    int16_t *tmp = malloc(n * sizeof *tmp);
+    if (!tmp) return;
+    for (size_t i = 0; i < n; i++) tmp[i] = ring[(pre + i) % RING_SAMPLES];
+    wakeclip_begin(tmp, n, (size_t)(begin - pre), (size_t)(word_end - pre), (size_t)(from - pre), keyword_db, wake_phrase);
+    free(tmp);
+}
+
 static void answer(uint64_t from)                   /* capture thread: act on the wake word that ended at from */
 {
     trigger(0, from);
@@ -1256,6 +1276,7 @@ static void answer(uint64_t from)                   /* capture thread: act on th
 
 static void wake_heard(uint64_t begin, uint64_t end, int simulated)     /* capture thread */
 {
+    pthread_mutex_lock(&core_lock); clip_word_begin = begin; clip_word_end = end; pthread_mutex_unlock(&core_lock);  /* the PC's SIGUSR1 comes only here */
     if (!arb_running()) { trigger(0, end); return; }
     if (arb_due) return;                            /* the same wake word once more while its round runs */
     pthread_mutex_lock(&core_lock);
@@ -1343,7 +1364,8 @@ static void on_wake(int slot, const char *keyword, uint64_t begin, uint64_t end)
     last_wake_ms = mono_ms();
     atomic_store(&wake_slot_heard, slot);
     { float db = 10 * log10f((ring_power(begin, end) + 1) / (32768.0f * 32768.0f));     /* the talker's level, for the gain */
-      pthread_mutex_lock(&core_lock); keyword_db = db; snprintf(wake_phrase, sizeof wake_phrase, "%s", wake_loaded[slot]); pthread_mutex_unlock(&core_lock); }
+      pthread_mutex_lock(&core_lock); keyword_db = db; snprintf(wake_phrase, sizeof wake_phrase, "%s", wake_loaded[slot]);
+      clip_word_begin = begin; clip_word_end = end; pthread_mutex_unlock(&core_lock); }
     if (!arb_running()) { trigger(0, end); return; }
     pthread_mutex_lock(&core_lock); det_begin = begin; det_end = end; pthread_mutex_unlock(&core_lock);
     atomic_store(&det_pending, 1);                  /* the ring is the capture thread's */
@@ -2396,12 +2418,18 @@ static void *capture_thread(void *arg)
             pthread_mutex_lock(&core_lock);
             uint64_t at = cap_clock() - n / 2;
             if (atomic_load(&streaming) && connected) {
-                if (replay_from) stream_ring(word_tail_end(replay_from, at), at);     /* after the wake word, up to this block */
+                if (replay_from) {                      /* after the wake word, up to this block */
+                    uint64_t from = word_tail_end(replay_from, at);
+                    if (run_wake && wakeclip_enable(-1)) clip_start(replay_from, from, at + n / 2);
+                    stream_ring(from, at);
+                }
                 send_mic(pcm, n / 2, at);
+                if (wakeclip_active() && !replay_from) wakeclip_add(pcm, n / 2);
             }
             replay_from = 0;
             pthread_mutex_unlock(&core_lock);
         }
+        if (wakeclip_active() && !atomic_load(&streaming)) wakeclip_end();   /* the request is over: off to the collector */
         if (atomic_exchange(&det_pending, 0)) {
             pthread_mutex_lock(&core_lock); uint64_t b = det_begin, e = det_end; pthread_mutex_unlock(&core_lock);
             wake_heard(b, e, 0);
